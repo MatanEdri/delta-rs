@@ -8,12 +8,15 @@ use futures::future::BoxFuture;
 use super::{CustomExecuteHandler, Operation};
 use crate::DeltaResult;
 use crate::DeltaTable;
-use crate::errors::{ColumnMappingOperation, DeltaTableError};
+use crate::errors::DeltaTableError;
 use crate::kernel::transaction::{CommitBuilder, CommitProperties};
 use crate::kernel::{Action, EagerSnapshot, MetadataExt as _, ProtocolExt as _, resolve_snapshot};
 use crate::logstore::LogStoreRef;
 use crate::protocol::DeltaOperation;
+#[cfg(feature = "datafusion")]
 use crate::table::config::TableProperty;
+#[cfg(feature = "datafusion")]
+use delta_kernel::schema::StructType;
 
 /// Remove constraints from the table
 pub struct SetTablePropertiesBuilder {
@@ -97,11 +100,53 @@ impl std::future::IntoFuture for SetTablePropertiesBuilder {
             let current_protocol = snapshot.protocol();
             let properties = this.properties;
 
-            if properties.contains_key(TableProperty::ColumnMappingMode.as_ref()) {
-                return Err(DeltaTableError::unsupported_column_mapping(
-                    ColumnMappingOperation::Write,
-                    "SET TBLPROPERTIES delta.columnMapping.mode",
-                ));
+            // Reject column mapping mode changes without datafusion
+            #[cfg(not(feature = "datafusion"))]
+            if let Some(mode_value) = properties.get("delta.columnMapping.mode") {
+                use delta_kernel::table_features::ColumnMappingMode;
+                let current_mode = snapshot.table_configuration().column_mapping_mode();
+                if mode_value != "none" || current_mode != ColumnMappingMode::None {
+                    return Err(DeltaTableError::Generic(
+                        "Column mapping requires the 'datafusion' feature. \
+                         Build with --features datafusion to enable column mapping support."
+                            .to_string(),
+                    ));
+                }
+            }
+
+            // Validate and assign column mapping metadata when activating column mapping.
+            // Uses identity mapping (physical name = logical name) so that existing Parquet
+            // files remain readable. Fields that already have column mapping metadata (caller-supplied)
+            // are preserved as-is.
+            #[cfg(feature = "datafusion")]
+            if let Some(mode_value) = properties.get(TableProperty::ColumnMappingMode.as_ref()) {
+                let current_mode = snapshot.table_configuration().column_mapping_mode();
+                crate::operations::column_mapping::validate_column_mapping_mode_property(
+                    mode_value,
+                    current_mode,
+                )?;
+
+                if mode_value == "name" || mode_value == "id" {
+                    let schema = snapshot.schema();
+                    let mut fields: Vec<_> = schema.fields().cloned().collect();
+                    let mut max_id = crate::operations::column_mapping::get_max_column_id_from_config(
+                        metadata.configuration(),
+                    );
+                    crate::operations::column_mapping::assign_identity_column_mapping_metadata(
+                        &mut fields, &mut max_id,
+                    );
+                    // Validate the final schema for column mapping metadata consistency
+                    crate::operations::column_mapping::validate_column_mapping_metadata(
+                        &fields,
+                        max_id,
+                    )?;
+                    let new_schema = StructType::try_new(fields)?;
+                    metadata = metadata.with_schema(&new_schema)?;
+                    metadata = metadata.add_config_key(
+                        "delta.columnMapping.maxColumnId".to_string(),
+                        max_id.to_string(),
+                    )?;
+                }
             }
 
             let new_protocol = current_protocol
@@ -114,6 +159,19 @@ impl std::future::IntoFuture for SetTablePropertiesBuilder {
 
             let final_protocol =
                 new_protocol.move_table_properties_into_features(metadata.configuration());
+
+            // Ensure protocol supports column mapping
+            #[cfg(feature = "datafusion")]
+            let final_protocol = if properties.contains_key(TableProperty::ColumnMappingMode.as_ref()) {
+                let mode_value = properties.get(TableProperty::ColumnMappingMode.as_ref()).unwrap();
+                if mode_value == "name" || mode_value == "id" {
+                    crate::operations::column_mapping::ensure_column_mapping_protocol(final_protocol)
+                } else {
+                    final_protocol
+                }
+            } else {
+                final_protocol
+            };
 
             let operation = DeltaOperation::SetTableProperties { properties };
 

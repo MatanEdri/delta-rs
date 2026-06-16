@@ -112,6 +112,19 @@ impl std::future::IntoFuture for AddTableFeatureBuilder {
 
             let mut protocol = snapshot.protocol().clone();
 
+            // Column mapping requires the datafusion feature for full protocol support.
+            // Reject it in default builds to avoid creating tables that fail protocol checks.
+            #[cfg(not(feature = "datafusion"))]
+            {
+                if name.iter().any(|f| matches!(f, TableFeatures::ColumnMapping)) {
+                    return Err(DeltaTableError::Generic(
+                        "Column mapping requires the 'datafusion' feature. \
+                         Build with --features datafusion to enable column mapping support."
+                            .to_string(),
+                    ));
+                }
+            }
+
             if !this.allow_protocol_versions_increase {
                 if !reader_features.is_empty()
                     && !writer_features.is_empty()

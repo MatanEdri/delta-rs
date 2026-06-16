@@ -283,20 +283,26 @@ impl CreateBuilder {
         if self.columns.is_empty() {
             return Err(CreateError::MissingSchema.into());
         }
+
+        // In non-datafusion builds, reject column mapping activation with a clear error
+        #[cfg(not(feature = "datafusion"))]
         if self
             .configuration
             .get(TableProperty::ColumnMappingMode.as_ref())
-            .is_some_and(|value| value.is_some())
+            .is_some_and(|value| value.as_deref().is_some_and(|v| v != "none"))
         {
-            return Err(DeltaTableError::unsupported_column_mapping(
-                ColumnMappingOperation::Write,
-                "CREATE TABLE with delta.columnMapping.mode",
+            return Err(DeltaTableError::Generic(
+                "Column mapping requires the 'datafusion' feature. \
+                 Build with --features datafusion to enable column mapping support."
+                    .to_string(),
             ));
         }
+        #[cfg(not(feature = "datafusion"))]
         if self.columns.iter().any(field_has_column_mapping_metadata) {
-            return Err(DeltaTableError::unsupported_column_mapping(
-                ColumnMappingOperation::Write,
-                "CREATE TABLE with column mapping metadata",
+            return Err(DeltaTableError::Generic(
+                "Column mapping requires the 'datafusion' feature. \
+                 Build with --features datafusion to enable column mapping support."
+                    .to_string(),
             ));
         }
 
@@ -320,7 +326,7 @@ impl CreateBuilder {
         let operation_id = self.get_operation_id();
         self.pre_execute(operation_id).await?;
 
-        let configuration = self
+        let mut configuration: HashMap<String, String> = self
             .configuration
             .iter()
             .filter_map(|(k, v)| Some((k.to_string(), v.as_ref()?.to_string())))
@@ -344,12 +350,51 @@ impl CreateBuilder {
             })
             .unwrap_or_else(|| current_protocol);
 
-        let schema = StructType::try_new(self.columns)?;
+        let mut schema = StructType::try_new(self.columns)?;
+
+        // Assign column mapping metadata when creating with column mapping mode
+        #[cfg(feature = "datafusion")]
+        {
+            let column_mapping_mode =
+                crate::operations::column_mapping::column_mapping_mode_from_config(&configuration);
+            if column_mapping_mode != delta_kernel::table_features::ColumnMappingMode::None {
+                let mode_value = configuration.get("delta.columnMapping.mode").unwrap();
+                crate::operations::column_mapping::validate_column_mapping_mode_property(
+                    mode_value,
+                    delta_kernel::table_features::ColumnMappingMode::None,
+                )?;
+                let mut fields: Vec<_> = schema.fields().cloned().collect();
+                let mut max_id = 0i64;
+                crate::operations::column_mapping::assign_column_mapping_metadata(
+                    &mut fields, &mut max_id,
+                );
+                crate::operations::column_mapping::validate_column_mapping_metadata(
+                    &fields, max_id,
+                )?;
+                schema = StructType::try_new(fields)?;
+                configuration.insert(
+                    "delta.columnMapping.maxColumnId".to_string(),
+                    max_id.to_string(),
+                );
+            }
+        }
 
         let protocol = protocol
             .apply_properties_to_protocol(&configuration, self.raise_if_key_not_exists)?
             .apply_column_metadata_to_protocol(&schema)?
             .move_table_properties_into_features(&configuration);
+
+        // Ensure protocol supports column mapping
+        #[cfg(feature = "datafusion")]
+        let protocol = {
+            let column_mapping_mode =
+                crate::operations::column_mapping::column_mapping_mode_from_config(&configuration);
+            if column_mapping_mode != delta_kernel::table_features::ColumnMappingMode::None {
+                crate::operations::column_mapping::ensure_column_mapping_protocol(protocol)
+            } else {
+                protocol
+            }
+        };
 
         let mut metadata = new_metadata(
             &schema,

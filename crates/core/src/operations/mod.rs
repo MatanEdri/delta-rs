@@ -44,6 +44,8 @@ use crate::table::config::{DEFAULT_NUM_INDEX_COLS, TablePropertiesExt as _};
 
 pub mod add_column;
 pub mod add_feature;
+#[cfg(feature = "datafusion")]
+pub mod column_mapping;
 pub mod convert_to_delta;
 pub mod create;
 pub mod drop_constraints;
