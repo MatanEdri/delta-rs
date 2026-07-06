@@ -10,10 +10,12 @@ use crate::DeltaResult;
 use crate::DeltaTable;
 use crate::errors::DeltaTableError;
 use crate::kernel::transaction::{CommitBuilder, CommitProperties};
-use crate::kernel::{Action, EagerSnapshot, MetadataExt as _, ProtocolExt as _, resolve_snapshot};
+use crate::kernel::{
+    Action, EagerSnapshot, MetadataExt as _, ProtocolExt as _, SnapshotMetadataRef,
+    resolve_snapshot,
+};
 use crate::logstore::LogStoreRef;
 use crate::protocol::DeltaOperation;
-#[cfg(feature = "datafusion")]
 use crate::table::config::TableProperty;
 #[cfg(feature = "datafusion")]
 use delta_kernel::schema::StructType;
@@ -80,6 +82,81 @@ impl SetTablePropertiesBuilder {
     }
 }
 
+fn plan_set_table_properties_actions(
+    snapshot: SnapshotMetadataRef<'_>,
+    properties: HashMap<String, String>,
+    raise_if_not_exists: bool,
+) -> DeltaResult<(Vec<Action>, DeltaOperation)> {
+    let mut metadata = snapshot.metadata.clone();
+    let current_protocol = snapshot.protocol;
+
+    // Validate and assign column mapping metadata when activating column mapping.
+    // Uses identity mapping (physical name = logical name) so that existing Parquet
+    // files remain readable.
+    #[cfg(feature = "datafusion")]
+    if let Some(mode_value) = properties.get(TableProperty::ColumnMappingMode.as_ref()) {
+        let current_mode = snapshot.table_configuration.column_mapping_mode();
+        crate::operations::column_mapping::validate_column_mapping_mode_property(
+            mode_value,
+            current_mode,
+        )?;
+
+        if mode_value == "name" || mode_value == "id" {
+            let schema = snapshot.table_configuration.logical_schema();
+            let mut fields: Vec<_> = schema.fields().cloned().collect();
+            let mut max_id = crate::operations::column_mapping::get_max_column_id_from_config(
+                metadata.configuration(),
+            );
+            crate::operations::column_mapping::assign_identity_column_mapping_metadata(
+                &mut fields, &mut max_id,
+            );
+            crate::operations::column_mapping::validate_column_mapping_metadata(
+                &fields,
+                max_id,
+            )?;
+            let new_schema = StructType::try_new(fields)?;
+            metadata = metadata.with_schema(&new_schema)?;
+            metadata = metadata.add_config_key(
+                "delta.columnMapping.maxColumnId".to_string(),
+                max_id.to_string(),
+            )?;
+        }
+    }
+
+    let new_protocol = current_protocol
+        .clone()
+        .apply_properties_to_protocol(&properties, raise_if_not_exists)?;
+
+    for (key, value) in &properties {
+        metadata = metadata.add_config_key(key.clone(), value.to_string())?;
+    }
+
+    let final_protocol = new_protocol.move_table_properties_into_features(metadata.configuration());
+
+    // Ensure protocol supports column mapping
+    #[cfg(feature = "datafusion")]
+    let final_protocol = if properties.contains_key(TableProperty::ColumnMappingMode.as_ref()) {
+        let mode_value = properties.get(TableProperty::ColumnMappingMode.as_ref()).unwrap();
+        if mode_value == "name" || mode_value == "id" {
+            crate::operations::column_mapping::ensure_column_mapping_protocol(final_protocol)
+        } else {
+            final_protocol
+        }
+    } else {
+        final_protocol
+    };
+
+    let operation = DeltaOperation::SetTableProperties { properties };
+
+    let mut actions = vec![Action::Metadata(metadata)];
+
+    if current_protocol.ne(&final_protocol) {
+        actions.push(Action::Protocol(final_protocol));
+    }
+
+    Ok((actions, operation))
+}
+
 impl std::future::IntoFuture for SetTablePropertiesBuilder {
     type Output = DeltaResult<DeltaTable>;
 
@@ -95,16 +172,17 @@ impl std::future::IntoFuture for SetTablePropertiesBuilder {
             let operation_id = this.get_operation_id();
             this.pre_execute(operation_id).await?;
 
-            let mut metadata = snapshot.metadata().clone();
-
-            let current_protocol = snapshot.protocol();
             let properties = this.properties;
 
             // Reject column mapping mode changes without datafusion
             #[cfg(not(feature = "datafusion"))]
             if let Some(mode_value) = properties.get("delta.columnMapping.mode") {
                 use delta_kernel::table_features::ColumnMappingMode;
-                let current_mode = snapshot.table_configuration().column_mapping_mode();
+                let current_mode = snapshot
+                    .snapshot()
+                    .metadata_state()
+                    .table_configuration
+                    .column_mapping_mode();
                 if mode_value != "none" || current_mode != ColumnMappingMode::None {
                     return Err(DeltaTableError::Generic(
                         "Column mapping requires the 'datafusion' feature. \
@@ -114,72 +192,11 @@ impl std::future::IntoFuture for SetTablePropertiesBuilder {
                 }
             }
 
-            // Validate and assign column mapping metadata when activating column mapping.
-            // Uses identity mapping (physical name = logical name) so that existing Parquet
-            // files remain readable. Fields that already have column mapping metadata (caller-supplied)
-            // are preserved as-is.
-            #[cfg(feature = "datafusion")]
-            if let Some(mode_value) = properties.get(TableProperty::ColumnMappingMode.as_ref()) {
-                let current_mode = snapshot.table_configuration().column_mapping_mode();
-                crate::operations::column_mapping::validate_column_mapping_mode_property(
-                    mode_value,
-                    current_mode,
-                )?;
-
-                if mode_value == "name" || mode_value == "id" {
-                    let schema = snapshot.schema();
-                    let mut fields: Vec<_> = schema.fields().cloned().collect();
-                    let mut max_id = crate::operations::column_mapping::get_max_column_id_from_config(
-                        metadata.configuration(),
-                    );
-                    crate::operations::column_mapping::assign_identity_column_mapping_metadata(
-                        &mut fields, &mut max_id,
-                    );
-                    // Validate the final schema for column mapping metadata consistency
-                    crate::operations::column_mapping::validate_column_mapping_metadata(
-                        &fields,
-                        max_id,
-                    )?;
-                    let new_schema = StructType::try_new(fields)?;
-                    metadata = metadata.with_schema(&new_schema)?;
-                    metadata = metadata.add_config_key(
-                        "delta.columnMapping.maxColumnId".to_string(),
-                        max_id.to_string(),
-                    )?;
-                }
-            }
-
-            let new_protocol = current_protocol
-                .clone()
-                .apply_properties_to_protocol(&properties, this.raise_if_not_exists)?;
-
-            for (key, value) in &properties {
-                metadata = metadata.add_config_key(key.clone(), value.to_string())?;
-            }
-
-            let final_protocol =
-                new_protocol.move_table_properties_into_features(metadata.configuration());
-
-            // Ensure protocol supports column mapping
-            #[cfg(feature = "datafusion")]
-            let final_protocol = if properties.contains_key(TableProperty::ColumnMappingMode.as_ref()) {
-                let mode_value = properties.get(TableProperty::ColumnMappingMode.as_ref()).unwrap();
-                if mode_value == "name" || mode_value == "id" {
-                    crate::operations::column_mapping::ensure_column_mapping_protocol(final_protocol)
-                } else {
-                    final_protocol
-                }
-            } else {
-                final_protocol
-            };
-
-            let operation = DeltaOperation::SetTableProperties { properties };
-
-            let mut actions = vec![Action::Metadata(metadata)];
-
-            if current_protocol.ne(&final_protocol) {
-                actions.push(Action::Protocol(final_protocol));
-            }
+            let (actions, operation) = plan_set_table_properties_actions(
+                snapshot.snapshot().metadata_state(),
+                properties,
+                this.raise_if_not_exists,
+            )?;
 
             let commit = CommitBuilder::from(this.commit_properties.clone())
                 .with_actions(actions.clone())
