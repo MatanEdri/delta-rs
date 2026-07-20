@@ -47,7 +47,11 @@ fn assign_column_mapping_metadata_with_mode(
     }
 }
 
-fn assign_field_mapping_metadata(field: &mut StructField, max_id: &mut i64, mode: PhysicalNameMode) {
+fn assign_field_mapping_metadata(
+    field: &mut StructField,
+    max_id: &mut i64,
+    mode: PhysicalNameMode,
+) {
     let physical_name_key = ColumnMetadataKey::ColumnMappingPhysicalName.as_ref();
     let id_key = ColumnMetadataKey::ColumnMappingId.as_ref();
 
@@ -81,7 +85,11 @@ fn assign_field_mapping_metadata(field: &mut StructField, max_id: &mut i64, mode
 
 /// Recursively walks a data type and annotates any reachable struct fields with column mapping metadata.
 /// Returns `Some(new_type)` if any changes were made, `None` otherwise.
-fn annotate_data_type(dt: &DeltaDataType, max_id: &mut i64, mode: PhysicalNameMode) -> Option<DeltaDataType> {
+fn annotate_data_type(
+    dt: &DeltaDataType,
+    max_id: &mut i64,
+    mode: PhysicalNameMode,
+) -> Option<DeltaDataType> {
     match dt {
         DeltaDataType::Struct(inner) => {
             let mut nested_fields: Vec<StructField> = inner.fields().cloned().collect();
@@ -103,11 +111,13 @@ fn annotate_data_type(dt: &DeltaDataType, max_id: &mut i64, mode: PhysicalNameMo
             let new_key = annotate_data_type(inner.key_type(), max_id, mode);
             let new_value = annotate_data_type(inner.value_type(), max_id, mode);
             if new_key.is_some() || new_value.is_some() {
-                Some(DeltaDataType::Map(Box::new(delta_kernel::schema::MapType::new(
-                    new_key.unwrap_or_else(|| inner.key_type().clone()),
-                    new_value.unwrap_or_else(|| inner.value_type().clone()),
-                    inner.value_contains_null(),
-                ))))
+                Some(DeltaDataType::Map(Box::new(
+                    delta_kernel::schema::MapType::new(
+                        new_key.unwrap_or_else(|| inner.key_type().clone()),
+                        new_value.unwrap_or_else(|| inner.value_type().clone()),
+                        inner.value_contains_null(),
+                    ),
+                )))
             } else {
                 None
             }
@@ -326,12 +336,16 @@ mod tests {
 
         assert_eq!(max_id, 2);
         for field in &fields {
-            assert!(field
-                .metadata
-                .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()));
-            assert!(field
-                .metadata
-                .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref()));
+            assert!(
+                field
+                    .metadata
+                    .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
+            );
+            assert!(
+                field
+                    .metadata
+                    .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref())
+            );
         }
         // Generated physical names should be UUID-based, not the logical name
         let phys = fields[0]
@@ -346,8 +360,8 @@ mod tests {
 
     #[test]
     fn test_assign_preserves_existing_metadata() {
-        let mut fields = vec![StructField::new("a", DeltaDataType::INTEGER, false)
-            .with_metadata([
+        let mut fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
                 (
                     ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
                     MetadataValue::String("custom_phys".to_string()),
@@ -356,7 +370,8 @@ mod tests {
                     ColumnMetadataKey::ColumnMappingId.as_ref(),
                     MetadataValue::Number(42),
                 ),
-            ])];
+            ]),
+        ];
         let mut max_id = 0i64;
         assign_column_mapping_metadata(&mut fields, &mut max_id);
 
@@ -366,10 +381,7 @@ mod tests {
             .metadata
             .get(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
             .unwrap();
-        assert_eq!(
-            phys,
-            &MetadataValue::String("custom_phys".to_string())
-        );
+        assert_eq!(phys, &MetadataValue::String("custom_phys".to_string()));
         let id = fields[0]
             .metadata
             .get(ColumnMetadataKey::ColumnMappingId.as_ref())
@@ -379,8 +391,8 @@ mod tests {
 
     #[test]
     fn test_assign_nested_struct() {
-        let inner = StructType::try_new([StructField::new("x", DeltaDataType::INTEGER, false)])
-            .unwrap();
+        let inner =
+            StructType::try_new([StructField::new("x", DeltaDataType::INTEGER, false)]).unwrap();
         let mut fields = vec![StructField::new(
             "nested",
             DeltaDataType::Struct(Box::new(inner)),
@@ -393,12 +405,14 @@ mod tests {
         // The nested struct field "x" should also have metadata
         if let DeltaDataType::Struct(inner) = fields[0].data_type() {
             let x = inner.fields().next().unwrap();
-            assert!(x
-                .metadata
-                .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()));
-            assert!(x
-                .metadata
-                .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref()));
+            assert!(
+                x.metadata
+                    .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
+            );
+            assert!(
+                x.metadata
+                    .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref())
+            );
         } else {
             panic!("expected struct type");
         }
@@ -491,26 +505,17 @@ mod tests {
             column_mapping_mode_from_config(&config),
             ColumnMappingMode::None
         );
-        config.insert(
-            "delta.columnMapping.mode".to_string(),
-            "name".to_string(),
-        );
+        config.insert("delta.columnMapping.mode".to_string(), "name".to_string());
         assert_eq!(
             column_mapping_mode_from_config(&config),
             ColumnMappingMode::Name
         );
-        config.insert(
-            "delta.columnMapping.mode".to_string(),
-            "id".to_string(),
-        );
+        config.insert("delta.columnMapping.mode".to_string(), "id".to_string());
         assert_eq!(
             column_mapping_mode_from_config(&config),
             ColumnMappingMode::Id
         );
-        config.insert(
-            "delta.columnMapping.mode".to_string(),
-            "none".to_string(),
-        );
+        config.insert("delta.columnMapping.mode".to_string(), "none".to_string());
         assert_eq!(
             column_mapping_mode_from_config(&config),
             ColumnMappingMode::None
@@ -550,8 +555,8 @@ mod tests {
 
     #[test]
     fn test_identity_mapping_preserves_existing_metadata() {
-        let mut fields = vec![StructField::new("a", DeltaDataType::INTEGER, false)
-            .with_metadata([
+        let mut fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
                 (
                     ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
                     MetadataValue::String("custom_phys".to_string()),
@@ -560,7 +565,8 @@ mod tests {
                     ColumnMetadataKey::ColumnMappingId.as_ref(),
                     MetadataValue::Number(10),
                 ),
-            ])];
+            ]),
+        ];
         let mut max_id = 0i64;
         assign_identity_column_mapping_metadata(&mut fields, &mut max_id);
 
@@ -625,10 +631,7 @@ mod tests {
         let err = validate_column_mapping_mode_property("invalid", ColumnMappingMode::None)
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("Invalid column mapping mode"),
-            "got: {err}"
-        );
+        assert!(err.contains("Invalid column mapping mode"), "got: {err}");
     }
 
     #[test]
@@ -636,10 +639,7 @@ mod tests {
         let err = validate_column_mapping_mode_property("none", ColumnMappingMode::Name)
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("cannot be deactivated"),
-            "got: {err}"
-        );
+        assert!(err.contains("cannot be deactivated"), "got: {err}");
     }
 
     #[test]
@@ -693,7 +693,9 @@ mod tests {
                 ),
             ]),
         ];
-        let err = validate_column_mapping_metadata(&fields, 2).unwrap_err().to_string();
+        let err = validate_column_mapping_metadata(&fields, 2)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Duplicate"), "got: {err}");
     }
 
@@ -721,87 +723,109 @@ mod tests {
                 ),
             ]),
         ];
-        let err = validate_column_mapping_metadata(&fields, 1).unwrap_err().to_string();
+        let err = validate_column_mapping_metadata(&fields, 1)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Duplicate column mapping id"), "got: {err}");
     }
 
     #[test]
     fn test_validate_metadata_id_exceeds_max() {
-        let fields = vec![StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
-            (
-                ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
-                MetadataValue::String("phys_a".to_string()),
-            ),
-            (
-                ColumnMetadataKey::ColumnMappingId.as_ref(),
-                MetadataValue::Number(5),
-            ),
-        ])];
-        let err = validate_column_mapping_metadata(&fields, 3).unwrap_err().to_string();
+        let fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
+                (
+                    ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
+                    MetadataValue::String("phys_a".to_string()),
+                ),
+                (
+                    ColumnMetadataKey::ColumnMappingId.as_ref(),
+                    MetadataValue::Number(5),
+                ),
+            ]),
+        ];
+        let err = validate_column_mapping_metadata(&fields, 3)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exceeds"), "got: {err}");
     }
 
     #[test]
     fn test_validate_metadata_wrong_type_physical_name() {
-        let fields = vec![StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
-            (
-                ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
-                MetadataValue::Number(42),
-            ),
-            (
-                ColumnMetadataKey::ColumnMappingId.as_ref(),
-                MetadataValue::Number(1),
-            ),
-        ])];
-        let err = validate_column_mapping_metadata(&fields, 1).unwrap_err().to_string();
+        let fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
+                (
+                    ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
+                    MetadataValue::Number(42),
+                ),
+                (
+                    ColumnMetadataKey::ColumnMappingId.as_ref(),
+                    MetadataValue::Number(1),
+                ),
+            ]),
+        ];
+        let err = validate_column_mapping_metadata(&fields, 1)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must be a string"), "got: {err}");
     }
 
     #[test]
     fn test_validate_metadata_negative_id_rejected() {
-        let fields = vec![StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
-            (
-                ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
-                MetadataValue::String("phys_a".to_string()),
-            ),
-            (
-                ColumnMetadataKey::ColumnMappingId.as_ref(),
-                MetadataValue::Number(-1),
-            ),
-        ])];
-        let err = validate_column_mapping_metadata(&fields, 1).unwrap_err().to_string();
+        let fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
+                (
+                    ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
+                    MetadataValue::String("phys_a".to_string()),
+                ),
+                (
+                    ColumnMetadataKey::ColumnMappingId.as_ref(),
+                    MetadataValue::Number(-1),
+                ),
+            ]),
+        ];
+        let err = validate_column_mapping_metadata(&fields, 1)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must be positive"), "got: {err}");
     }
 
     #[test]
     fn test_validate_metadata_zero_id_rejected() {
-        let fields = vec![StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
-            (
-                ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
-                MetadataValue::String("phys_a".to_string()),
-            ),
-            (
-                ColumnMetadataKey::ColumnMappingId.as_ref(),
-                MetadataValue::Number(0),
-            ),
-        ])];
-        let err = validate_column_mapping_metadata(&fields, 1).unwrap_err().to_string();
+        let fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
+                (
+                    ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
+                    MetadataValue::String("phys_a".to_string()),
+                ),
+                (
+                    ColumnMetadataKey::ColumnMappingId.as_ref(),
+                    MetadataValue::Number(0),
+                ),
+            ]),
+        ];
+        let err = validate_column_mapping_metadata(&fields, 1)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("must be positive"), "got: {err}");
     }
 
     #[test]
     fn test_validate_metadata_zero_max_column_id_rejected() {
-        let fields = vec![StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
-            (
-                ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
-                MetadataValue::String("phys_a".to_string()),
-            ),
-            (
-                ColumnMetadataKey::ColumnMappingId.as_ref(),
-                MetadataValue::Number(1),
-            ),
-        ])];
-        let err = validate_column_mapping_metadata(&fields, 0).unwrap_err().to_string();
+        let fields = vec![
+            StructField::new("a", DeltaDataType::INTEGER, false).with_metadata([
+                (
+                    ColumnMetadataKey::ColumnMappingPhysicalName.as_ref(),
+                    MetadataValue::String("phys_a".to_string()),
+                ),
+                (
+                    ColumnMetadataKey::ColumnMappingId.as_ref(),
+                    MetadataValue::Number(1),
+                ),
+            ]),
+        ];
+        let err = validate_column_mapping_metadata(&fields, 0)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("maxColumnId must be positive"), "got: {err}");
     }
 }

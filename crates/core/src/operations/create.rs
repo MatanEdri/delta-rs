@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use delta_kernel::schema::MetadataValue;
 #[cfg(not(feature = "datafusion"))]
 use delta_kernel::schema::ColumnMetadataKey;
+use delta_kernel::schema::MetadataValue;
 use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -372,7 +372,8 @@ impl CreateBuilder {
                 let mut fields: Vec<_> = schema.fields().cloned().collect();
                 let mut max_id = 0i64;
                 crate::operations::column_mapping::assign_column_mapping_metadata(
-                    &mut fields, &mut max_id,
+                    &mut fields,
+                    &mut max_id,
                 );
                 crate::operations::column_mapping::validate_column_mapping_metadata(
                     &fields, max_id,

@@ -463,7 +463,10 @@ async fn column_mapping_rejected_without_datafusion() -> TestResult {
         .with_columns(simple_fields())
         .with_configuration([("delta.columnMapping.mode", Some("name"))])
         .await;
-    assert!(result.is_err(), "CREATE with CM should fail without datafusion");
+    assert!(
+        result.is_err(),
+        "CREATE with CM should fail without datafusion"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("datafusion"),
@@ -478,7 +481,10 @@ async fn column_mapping_rejected_without_datafusion() -> TestResult {
             "name".to_string(),
         )]))
         .await;
-    assert!(result.is_err(), "SET TBLPROPERTIES with CM should fail without datafusion");
+    assert!(
+        result.is_err(),
+        "SET TBLPROPERTIES with CM should fail without datafusion"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("datafusion"),
@@ -511,7 +517,10 @@ async fn column_mapping_add_feature_rejected_without_datafusion() -> TestResult 
         .with_feature(TableFeatures::ColumnMapping)
         .with_allow_protocol_versions_increase(true)
         .await;
-    assert!(result.is_err(), "add_feature(ColumnMapping) should fail without datafusion");
+    assert!(
+        result.is_err(),
+        "add_feature(ColumnMapping) should fail without datafusion"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("datafusion"),
@@ -633,7 +642,9 @@ async fn column_mapping_cdf_write_is_kernel_readable() -> TestResult {
 /// applying `properties` (which must include `delta.columnMapping.mode`). delta-rs can't create CM
 /// tables yet, so this is how the round-trip tests obtain one to write against.
 #[cfg(feature = "datafusion")]
-async fn create_kernel_column_mapping_table(properties: &[(&str, &str)]) -> TestResult<(TempDir, Url)> {
+async fn create_kernel_column_mapping_table(
+    properties: &[(&str, &str)],
+) -> TestResult<(TempDir, Url)> {
     use std::sync::Arc;
 
     use delta_kernel::committer::FileSystemCommitter;
@@ -672,7 +683,8 @@ async fn create_kernel_column_mapping_table(properties: &[(&str, &str)]) -> Test
 async fn column_mapping_datafusion_insert_roundtrips() -> TestResult {
     use datafusion::prelude::SessionContext;
 
-    let (_tmp, url) = create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
+    let (_tmp, url) =
+        create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
 
     let table = open_table(url.clone()).await?;
     let ctx = SessionContext::new();
@@ -713,7 +725,8 @@ async fn column_mapping_merge_schema_evolution_rejected() -> TestResult {
     use arrow_schema::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::{SessionContext, col};
 
-    let (_tmp, url) = create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
+    let (_tmp, url) =
+        create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
     let table = open_table(url).await?;
 
     // Source carries an extra column, so with_merge_schema(true) attempts to evolve the schema.

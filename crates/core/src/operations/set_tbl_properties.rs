@@ -110,12 +110,10 @@ fn plan_set_table_properties_actions(
                 metadata.configuration(),
             );
             crate::operations::column_mapping::assign_identity_column_mapping_metadata(
-                &mut fields, &mut max_id,
+                &mut fields,
+                &mut max_id,
             );
-            crate::operations::column_mapping::validate_column_mapping_metadata(
-                &fields,
-                max_id,
-            )?;
+            crate::operations::column_mapping::validate_column_mapping_metadata(&fields, max_id)?;
             let new_schema = StructType::try_new(fields)?;
             metadata = metadata.with_schema(&new_schema)?;
             metadata = metadata.add_config_key(
@@ -138,7 +136,9 @@ fn plan_set_table_properties_actions(
     // Ensure protocol supports column mapping
     #[cfg(feature = "datafusion")]
     let final_protocol = if properties.contains_key(TableProperty::ColumnMappingMode.as_ref()) {
-        let mode_value = properties.get(TableProperty::ColumnMappingMode.as_ref()).unwrap();
+        let mode_value = properties
+            .get(TableProperty::ColumnMappingMode.as_ref())
+            .unwrap();
         if mode_value == "name" || mode_value == "id" {
             crate::operations::column_mapping::ensure_column_mapping_protocol(final_protocol)
         } else {

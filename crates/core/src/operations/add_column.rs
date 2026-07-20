@@ -95,10 +95,9 @@ fn plan_add_column_actions(
         let column_mapping_mode = snapshot.table_configuration.column_mapping_mode();
         if column_mapping_mode != delta_kernel::table_features::ColumnMappingMode::None {
             let mut all_fields: Vec<_> = new_table_schema.fields().cloned().collect();
-            let mut max_id =
-                crate::operations::column_mapping::get_max_column_id_from_config(
-                    metadata.configuration(),
-                );
+            let mut max_id = crate::operations::column_mapping::get_max_column_id_from_config(
+                metadata.configuration(),
+            );
             crate::operations::column_mapping::assign_column_mapping_metadata(
                 &mut all_fields,
                 &mut max_id,
@@ -168,7 +167,6 @@ impl std::future::IntoFuture for AddColumnBuilder {
                     ));
                 }
             }
-
 
             let fields = match this.fields.clone() {
                 Some(v) => v,

@@ -95,7 +95,10 @@ fn plan_add_table_feature_actions(
     // Column mapping requires the datafusion feature for full protocol support.
     #[cfg(not(feature = "datafusion"))]
     {
-        if name.iter().any(|f| matches!(f, TableFeatures::ColumnMapping)) {
+        if name
+            .iter()
+            .any(|f| matches!(f, TableFeatures::ColumnMapping))
+        {
             return Err(DeltaTableError::Generic(
                 "Column mapping requires the 'datafusion' feature. \
                  Build with --features datafusion to enable column mapping support."
@@ -156,7 +159,11 @@ impl std::future::IntoFuture for AddTableFeatureBuilder {
             // Reject it in default builds to avoid creating tables that fail protocol checks.
             #[cfg(not(feature = "datafusion"))]
             {
-                if this.name.iter().any(|f| matches!(f, TableFeatures::ColumnMapping)) {
+                if this
+                    .name
+                    .iter()
+                    .any(|f| matches!(f, TableFeatures::ColumnMapping))
+                {
                     return Err(DeltaTableError::Generic(
                         "Column mapping requires the 'datafusion' feature. \
                          Build with --features datafusion to enable column mapping support."
