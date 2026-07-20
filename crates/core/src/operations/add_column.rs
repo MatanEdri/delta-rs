@@ -3,12 +3,10 @@
 use std::sync::Arc;
 
 use delta_kernel::schema::StructType;
-use delta_kernel::table_features::ColumnMappingMode;
 use futures::future::BoxFuture;
 use itertools::Itertools;
 
 use super::{CustomExecuteHandler, Operation};
-use crate::errors::ColumnMappingOperation;
 use crate::kernel::schema::merge_delta_struct;
 use crate::kernel::transaction::{CommitBuilder, CommitProperties};
 use crate::kernel::{
@@ -91,6 +89,33 @@ fn plan_add_column_actions(
     let table_schema = snapshot.table_configuration.logical_schema();
     let new_table_schema = merge_delta_struct(table_schema.as_ref(), fields_right)?;
 
+    // Assign column mapping metadata to new fields if column mapping is enabled
+    #[cfg(feature = "datafusion")]
+    let new_table_schema = {
+        let column_mapping_mode = snapshot.table_configuration.column_mapping_mode();
+        if column_mapping_mode != delta_kernel::table_features::ColumnMappingMode::None {
+            let mut all_fields: Vec<_> = new_table_schema.fields().cloned().collect();
+            let mut max_id = crate::operations::column_mapping::get_max_column_id_from_config(
+                metadata.configuration(),
+            );
+            crate::operations::column_mapping::assign_column_mapping_metadata(
+                &mut all_fields,
+                &mut max_id,
+            );
+            crate::operations::column_mapping::validate_column_mapping_metadata(
+                &all_fields,
+                max_id,
+            )?;
+            metadata = metadata.add_config_key(
+                "delta.columnMapping.maxColumnId".to_string(),
+                max_id.to_string(),
+            )?;
+            StructType::try_new(all_fields)?
+        } else {
+            new_table_schema
+        }
+    };
+
     let current_protocol = snapshot.protocol;
     let new_protocol = current_protocol
         .clone()
@@ -123,17 +148,24 @@ impl std::future::IntoFuture for AddColumnBuilder {
         Box::pin(async move {
             let snapshot =
                 resolve_snapshot(&this.log_store, this.snapshot.clone(), false, None).await?;
-            if snapshot
-                .snapshot()
-                .metadata_state()
-                .table_configuration
-                .column_mapping_mode()
-                != ColumnMappingMode::None
+
+            // Reject ADD COLUMN on column-mapped tables without datafusion
+            #[cfg(not(feature = "datafusion"))]
             {
-                return Err(DeltaTableError::unsupported_column_mapping(
-                    ColumnMappingOperation::Write,
-                    "ADD COLUMN",
-                ));
+                use delta_kernel::table_features::ColumnMappingMode;
+                if snapshot
+                    .snapshot()
+                    .metadata_state()
+                    .table_configuration
+                    .column_mapping_mode()
+                    != ColumnMappingMode::None
+                {
+                    return Err(DeltaTableError::Generic(
+                        "Column mapping requires the 'datafusion' feature. \
+                         Build with --features datafusion to enable column mapping support."
+                            .to_string(),
+                    ));
+                }
             }
 
             let fields = match this.fields.clone() {

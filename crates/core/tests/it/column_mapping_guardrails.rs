@@ -337,43 +337,91 @@ async fn column_mapping_optimize_still_rejected() -> TestResult {
     Ok(())
 }
 
+/// ADD COLUMN on a column-mapped table should succeed and assign column mapping metadata.
+#[cfg(feature = "datafusion")]
 #[tokio::test]
-async fn column_mapping_guardrails_metadata_operations() -> TestResult {
-    let (_temp_dir, table_path, table) = copied_column_mapping_table().await?;
-    let before = collect_data_files(&table_path)?;
-
-    let err = table
+async fn column_mapping_metadata_operations_allowed() -> TestResult {
+    let (_temp_dir, _table_path, table) = copied_column_mapping_table().await?;
+    let table = table
         .add_columns()
         .with_fields([StructField::nullable("new_col", DataType::STRING)])
-        .await
-        .expect_err("add column should reject column-mapped tables");
-    assert_unsupported_column_mapping_write(&err, "ADD COLUMN");
-    assert_eq!(before, collect_data_files(&table_path)?);
+        .await?;
+    let snapshot = table.snapshot()?;
+    let schema = snapshot.snapshot().schema();
+    let new_field = schema
+        .field("new_col")
+        .expect("new column should exist in schema");
+    assert!(
+        new_field
+            .metadata()
+            .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()),
+        "new column should have physicalName metadata"
+    );
+    assert!(
+        new_field
+            .metadata()
+            .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref()),
+        "new column should have column mapping id metadata"
+    );
 
+    // SET TBLPROPERTIES to activate column mapping on a plain table should succeed.
+    // Existing fields should get identity mapping (physicalName = logical name).
     let table = simple_table().await?;
-    let err = table
+    let table = table
         .set_tbl_properties()
         .with_properties(HashMap::from([(
             "delta.columnMapping.mode".to_string(),
             "name".to_string(),
         )]))
-        .await
-        .expect_err("setting column mapping mode should be rejected");
-    assert_unsupported_column_mapping_write(&err, "SET TBLPROPERTIES delta.columnMapping.mode");
+        .await?;
+    let snapshot = table.snapshot()?;
+    let schema = snapshot.snapshot().schema();
+    let id_field = schema.field("id").expect("id field should exist");
+    assert!(
+        id_field
+            .metadata()
+            .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()),
+        "existing field should get physicalName when column mapping is activated"
+    );
+    let phys_name = id_field
+        .metadata()
+        .get(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
+        .expect("physicalName should exist");
+    assert_eq!(
+        phys_name,
+        &MetadataValue::String("id".to_string()),
+        "set_tbl_properties should use identity mapping for existing fields"
+    );
 
     Ok(())
 }
 
+/// CREATE TABLE with columnMapping.mode should succeed and assign column mapping metadata.
+#[cfg(feature = "datafusion")]
 #[tokio::test]
-async fn column_mapping_guardrails_create_rejects_activation_and_reserved_metadata() -> TestResult {
-    let err = DeltaTable::new_in_memory()
+async fn column_mapping_create_allows_activation_and_preserves_metadata() -> TestResult {
+    let table = DeltaTable::new_in_memory()
         .create()
         .with_columns(simple_fields())
         .with_configuration([("delta.columnMapping.mode", Some("name"))])
-        .await
-        .expect_err("create should reject column mapping mode");
-    assert_unsupported_column_mapping_write(&err, "CREATE TABLE with delta.columnMapping.mode");
+        .await?;
+    let snapshot = table.snapshot()?;
+    let schema = snapshot.snapshot().schema();
+    let id_field = schema.field("id").expect("id field should exist");
+    assert!(
+        id_field
+            .metadata()
+            .contains_key(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref()),
+        "field should have physicalName when creating with column mapping mode"
+    );
+    assert!(
+        id_field
+            .metadata()
+            .contains_key(ColumnMetadataKey::ColumnMappingId.as_ref()),
+        "field should have column mapping id when creating with column mapping mode"
+    );
 
+    // CREATE TABLE with caller-supplied column mapping metadata should preserve it.
     let mapped_field = StructField::nullable("id", DataType::INTEGER).with_metadata([
         (
             ColumnMetadataKey::ColumnMappingId.as_ref(),
@@ -385,16 +433,68 @@ async fn column_mapping_guardrails_create_rejects_activation_and_reserved_metada
         ),
     ]);
 
-    let err = DeltaTable::new_in_memory()
+    let table = DeltaTable::new_in_memory()
         .create()
         .with_columns([mapped_field])
-        .await
-        .expect_err("create should reject column mapping metadata");
-    assert_unsupported_column_mapping_write(&err, "CREATE TABLE with column mapping metadata");
+        .with_configuration([("delta.columnMapping.mode", Some("name"))])
+        .await?;
+    let snapshot = table.snapshot()?;
+    let schema = snapshot.snapshot().schema();
+    let id_field = schema.field("id").expect("id field should exist");
+    let phys_name = id_field
+        .metadata()
+        .get(ColumnMetadataKey::ColumnMappingPhysicalName.as_ref())
+        .expect("physicalName should exist");
+    assert_eq!(
+        phys_name,
+        &MetadataValue::String("col-id".to_string()),
+        "caller-supplied physicalName should be preserved"
+    );
 
     Ok(())
 }
 
+/// Without the datafusion feature, column mapping activation should be rejected.
+#[cfg(not(feature = "datafusion"))]
+#[tokio::test]
+async fn column_mapping_rejected_without_datafusion() -> TestResult {
+    let result = DeltaTable::new_in_memory()
+        .create()
+        .with_columns(simple_fields())
+        .with_configuration([("delta.columnMapping.mode", Some("name"))])
+        .await;
+    assert!(
+        result.is_err(),
+        "CREATE with CM should fail without datafusion"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("datafusion"),
+        "Error should mention datafusion feature requirement, got: {err_msg}"
+    );
+
+    let table = simple_table().await?;
+    let result = table
+        .set_tbl_properties()
+        .with_properties(HashMap::from([(
+            "delta.columnMapping.mode".to_string(),
+            "name".to_string(),
+        )]))
+        .await;
+    assert!(
+        result.is_err(),
+        "SET TBLPROPERTIES with CM should fail without datafusion"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("datafusion"),
+        "Error should mention datafusion feature requirement, got: {err_msg}"
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "datafusion")]
 #[tokio::test]
 async fn column_mapping_guardrails_add_feature_still_allows_column_mapping() -> TestResult {
     simple_table()
@@ -404,6 +504,28 @@ async fn column_mapping_guardrails_add_feature_still_allows_column_mapping() -> 
         .with_allow_protocol_versions_increase(true)
         .await?;
 
+    Ok(())
+}
+
+/// Without datafusion, add_feature(ColumnMapping) should be rejected.
+#[cfg(not(feature = "datafusion"))]
+#[tokio::test]
+async fn column_mapping_add_feature_rejected_without_datafusion() -> TestResult {
+    let result = simple_table()
+        .await?
+        .add_feature()
+        .with_feature(TableFeatures::ColumnMapping)
+        .with_allow_protocol_versions_increase(true)
+        .await;
+    assert!(
+        result.is_err(),
+        "add_feature(ColumnMapping) should fail without datafusion"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("datafusion"),
+        "Error should mention datafusion feature requirement, got: {err_msg}"
+    );
     Ok(())
 }
 
@@ -520,7 +642,9 @@ async fn column_mapping_cdf_write_is_kernel_readable() -> TestResult {
 /// applying `properties` (which must include `delta.columnMapping.mode`). delta-rs can't create CM
 /// tables yet, so this is how the round-trip tests obtain one to write against.
 #[cfg(feature = "datafusion")]
-async fn create_kernel_cm_table(properties: &[(&str, &str)]) -> TestResult<(TempDir, Url)> {
+async fn create_kernel_column_mapping_table(
+    properties: &[(&str, &str)],
+) -> TestResult<(TempDir, Url)> {
     use std::sync::Arc;
 
     use delta_kernel::committer::FileSystemCommitter;
@@ -559,7 +683,8 @@ async fn create_kernel_cm_table(properties: &[(&str, &str)]) -> TestResult<(Temp
 async fn column_mapping_datafusion_insert_roundtrips() -> TestResult {
     use datafusion::prelude::SessionContext;
 
-    let (_tmp, url) = create_kernel_cm_table(&[("delta.columnMapping.mode", "name")]).await?;
+    let (_tmp, url) =
+        create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
 
     let table = open_table(url.clone()).await?;
     let ctx = SessionContext::new();
@@ -600,7 +725,8 @@ async fn column_mapping_merge_schema_evolution_rejected() -> TestResult {
     use arrow_schema::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::{SessionContext, col};
 
-    let (_tmp, url) = create_kernel_cm_table(&[("delta.columnMapping.mode", "name")]).await?;
+    let (_tmp, url) =
+        create_kernel_column_mapping_table(&[("delta.columnMapping.mode", "name")]).await?;
     let table = open_table(url).await?;
 
     // Source carries an extra column, so with_merge_schema(true) attempts to evolve the schema.

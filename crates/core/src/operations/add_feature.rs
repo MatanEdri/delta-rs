@@ -92,6 +92,21 @@ fn plan_add_table_feature_actions(
 ) -> DeltaResult<(Vec<Action>, DeltaOperation)> {
     debug_assert!(!name.is_empty());
 
+    // Column mapping requires the datafusion feature for full protocol support.
+    #[cfg(not(feature = "datafusion"))]
+    {
+        if name
+            .iter()
+            .any(|f| matches!(f, TableFeatures::ColumnMapping))
+        {
+            return Err(DeltaTableError::Generic(
+                "Column mapping requires the 'datafusion' feature. \
+                 Build with --features datafusion to enable column mapping support."
+                    .to_string(),
+            ));
+        }
+    }
+
     let (reader_features, writer_features): (Vec<Option<TableFeature>>, Vec<Option<TableFeature>>) =
         name.iter().map(|v| v.to_reader_writer_features()).unzip();
     let reader_features = reader_features.into_iter().flatten().collect_vec();
@@ -139,6 +154,23 @@ impl std::future::IntoFuture for AddTableFeatureBuilder {
             }
             let operation_id = this.get_operation_id();
             this.pre_execute(operation_id).await?;
+
+            // Column mapping requires the datafusion feature for full protocol support.
+            // Reject it in default builds to avoid creating tables that fail protocol checks.
+            #[cfg(not(feature = "datafusion"))]
+            {
+                if this
+                    .name
+                    .iter()
+                    .any(|f| matches!(f, TableFeatures::ColumnMapping))
+                {
+                    return Err(DeltaTableError::Generic(
+                        "Column mapping requires the 'datafusion' feature. \
+                         Build with --features datafusion to enable column mapping support."
+                            .to_string(),
+                    ));
+                }
+            }
 
             let (actions, operation) = plan_add_table_feature_actions(
                 snapshot.snapshot().metadata_state(),
