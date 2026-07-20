@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use super::{CustomExecuteHandler, Operation};
 use crate::DeltaResult;
 use crate::DeltaTable;
+#[cfg(not(feature = "datafusion"))]
 use crate::errors::DeltaTableError;
 use crate::kernel::transaction::{CommitBuilder, CommitProperties};
 use crate::kernel::{
@@ -16,6 +17,7 @@ use crate::kernel::{
 };
 use crate::logstore::LogStoreRef;
 use crate::protocol::DeltaOperation;
+#[cfg(feature = "datafusion")]
 use crate::table::config::TableProperty;
 #[cfg(feature = "datafusion")]
 use delta_kernel::schema::StructType;

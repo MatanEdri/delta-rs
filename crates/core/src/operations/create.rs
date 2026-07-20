@@ -4,14 +4,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use delta_kernel::schema::{ColumnMetadataKey, MetadataValue};
+use delta_kernel::schema::MetadataValue;
+#[cfg(not(feature = "datafusion"))]
+use delta_kernel::schema::ColumnMetadataKey;
 use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{CustomExecuteHandler, Operation};
-use crate::errors::{ColumnMappingOperation, DeltaResult, DeltaTableError};
+use crate::errors::{DeltaResult, DeltaTableError};
 use crate::kernel::transaction::{CommitBuilder, CommitProperties, PROTOCOL, TableReference};
 use crate::kernel::{
     Action, DataType, MetadataExt, ProtocolExt as _, ProtocolInner, StructField, StructType,
@@ -50,6 +52,7 @@ impl From<CreateError> for DeltaTableError {
     }
 }
 
+#[cfg(not(feature = "datafusion"))]
 fn data_type_has_column_mapping_metadata(data_type: &DataType) -> bool {
     match data_type {
         DataType::Array(array) => data_type_has_column_mapping_metadata(array.element_type()),
@@ -64,6 +67,7 @@ fn data_type_has_column_mapping_metadata(data_type: &DataType) -> bool {
     }
 }
 
+#[cfg(not(feature = "datafusion"))]
 fn field_has_column_mapping_metadata(field: &StructField) -> bool {
     field
         .metadata()
@@ -326,6 +330,7 @@ impl CreateBuilder {
         let operation_id = self.get_operation_id();
         self.pre_execute(operation_id).await?;
 
+        #[cfg_attr(not(feature = "datafusion"), allow(unused_mut))]
         let mut configuration: HashMap<String, String> = self
             .configuration
             .iter()
@@ -350,6 +355,7 @@ impl CreateBuilder {
             })
             .unwrap_or_else(|| current_protocol);
 
+        #[cfg_attr(not(feature = "datafusion"), allow(unused_mut))]
         let mut schema = StructType::try_new(self.columns)?;
 
         // Assign column mapping metadata when creating with column mapping mode
